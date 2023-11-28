@@ -25,7 +25,7 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 android {
-    compileSdkVersion 33
+    compileSdk 33
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_1_8
@@ -50,5 +50,6 @@ android {
 }
 
 dependencies {
+// implementation files('/Users/linslouis/Developer/flutter/bin/cache/artifacts/engine/android-arm64-release/flutter.jar')
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
 }

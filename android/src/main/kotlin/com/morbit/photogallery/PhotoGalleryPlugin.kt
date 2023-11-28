@@ -11,6 +11,7 @@ import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.os.Build
 import android.provider.MediaStore
+import android.util.Log
 import android.util.Size
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
@@ -18,11 +19,13 @@ import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
-import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry.Registrar
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.FileWriter
 import java.util.Collections
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -49,6 +52,7 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
         const val imageType = "image"
         const val videoType = "video"
+        const val audioType = "audio"
 
         const val allAlbumId = "__ALL__"
         const val allAlbumName = "All"
@@ -131,7 +135,7 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         this.activity = null
     }
 
-    override fun onMethodCall(call: MethodCall, result: Result) {
+    override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "listAlbums" -> {
                 val mediumType = call.argument<String>("mediumType")
@@ -222,9 +226,24 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 }
             }
 
+            //get all music files
+            "getAllMusicFiles" -> {
+
+                Log.e("LINSLOG", "getAllMusicFiles: 1");
+
+
+                result.success(
+                    getMusicDataJson()
+                )
+
+
+            }
+
             else -> result.notImplemented()
         }
     }
+
+
 
     private fun listAlbums(mediumType: String?): List<Map<String, Any?>> {
         return when (mediumType) {
@@ -236,12 +255,82 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 listVideoAlbums().values.toList()
             }
 
+            audioType -> {
+                listAudioAlbums().values.toList()
+            }
+
             else -> {
                 listAllAlbums().values.toList()
             }
         }
     }
+    fun getMusicDataJson(): String {
+        val jsonRoot = JSONObject()
 
+        try {
+            val projection = arrayOf(
+                MediaStore.Audio.Media._ID,
+                MediaStore.Audio.Media.ARTIST,
+                MediaStore.Audio.Media.TITLE,
+                MediaStore.Audio.Media.DATA,
+                MediaStore.Audio.Media.DISPLAY_NAME,
+                MediaStore.Audio.Media.DURATION
+            )
+
+            context.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                projection, null, null, null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idIndex = cursor.getColumnIndex(MediaStore.Audio.Media._ID)
+                    val artistIndex = cursor.getColumnIndex(MediaStore.Audio.Media.ARTIST)
+                    val titleIndex = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE)
+                    val dataIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DATA)
+                    val displayNameIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
+                    val durationIndex = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
+
+                    do {
+                        val fileJson = JSONObject().apply {
+                            if (idIndex != -1) put("ID", cursor.getLong(idIndex))
+                            if (artistIndex != -1) put("Artist", cursor.getString(artistIndex))
+                            if (titleIndex != -1) put("Title", cursor.getString(titleIndex))
+                            if (dataIndex != -1) put("Data", cursor.getString(dataIndex))
+                            if (displayNameIndex != -1) put("DisplayName", cursor.getString(displayNameIndex))
+                            if (durationIndex != -1) put("Duration", cursor.getLong(durationIndex))
+                        }
+
+                        if (dataIndex != -1) {
+                            val path = cursor.getString(dataIndex)
+                            val pathParts = path.split("/")
+                            var currentLevel = jsonRoot
+
+                            for (i in 0 until pathParts.size - 1) {
+                                val part = pathParts[i]
+                                currentLevel = if (!currentLevel.has(part)) {
+                                    currentLevel.put(part, JSONObject())
+                                    currentLevel.getJSONObject(part)
+                                } else if (currentLevel.get(part) is JSONObject) {
+                                    currentLevel.getJSONObject(part)
+                                } else {
+                                    // Handle the case where the existing entry is not a JSONObject
+                                    continue
+                                }
+                            }
+
+                            val musicArray = currentLevel.optJSONArray("mFiles") ?: JSONArray().also {
+                                currentLevel.put("mFiles", it)
+                            }
+                            musicArray.put(fileJson)
+                        }
+                    } while (cursor.moveToNext())
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+
+        return jsonRoot.toString(4)
+    }
     private fun listImageAlbums(): Map<String, Map<String, Any>> {
         this.context.run {
             var total = 0
@@ -323,6 +412,57 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                         albumHashMap[bucketId] = hashMapOf(
                             "id" to bucketId,
                             "name" to folderName,
+                            "count" to 1
+                        )
+                    } else {
+                        val count = album["count"] as Int
+                        album["count"] = count + 1
+                    }
+                    total++
+                }
+            }
+
+            val albumLinkedMap = linkedMapOf<String, Map<String, Any>>()
+            albumLinkedMap[allAlbumId] = hashMapOf(
+                "id" to allAlbumId,
+                "name" to allAlbumName,
+                "count" to total
+            )
+            albumLinkedMap.putAll(albumHashMap)
+            return albumLinkedMap
+        }
+    }
+
+    private fun listAudioAlbums(): Map<String, Map<String, Any>> {
+        this.context.run {
+            var total = 0
+            val albumHashMap = hashMapOf<String, HashMap<String, Any>>()
+
+            val audioProjection = arrayOf(
+                MediaStore.Audio.Media.ALBUM,
+                MediaStore.Audio.Media.ALBUM_ID
+            )
+
+            val audioCursor = this.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                audioProjection,
+                null,
+                null,
+                null
+            )
+
+            audioCursor?.use { cursor ->
+                val albumColumn = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM)
+                val albumColumnId = cursor.getColumnIndex(MediaStore.Audio.Media.ALBUM_ID)
+
+                while (cursor.moveToNext()) {
+                    val albumId = cursor.getString(albumColumnId)
+                    val album = albumHashMap[albumId]
+                    if (album == null) {
+                        val albumName = cursor.getString(albumColumn)
+                        albumHashMap[albumId] = hashMapOf(
+                            "id" to albumId,
+                            "name" to albumName,
                             "count" to 1
                         )
                     } else {
