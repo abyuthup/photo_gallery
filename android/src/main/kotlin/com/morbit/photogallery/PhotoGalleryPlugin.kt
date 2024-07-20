@@ -25,7 +25,6 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
-import java.io.FileWriter
 import java.util.Collections
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -99,6 +98,25 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             MediaStore.Video.Media.DURATION,
             MediaStore.Video.Media.DATE_ADDED,
             MediaStore.Video.Media.DATE_MODIFIED
+        )
+
+        val audioMetadataProjection = arrayOf(
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.TITLE,
+            MediaStore.Audio.Media.SIZE,
+            MediaStore.Audio.Media.MIME_TYPE,
+            MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.DATE_ADDED,
+            MediaStore.Audio.Media.DATE_MODIFIED
+
+        )
+
+
+        val audioBriefMetadataProjection = arrayOf(
+            MediaStore.Audio.Media._ID,
+            MediaStore.Audio.Media.DURATION,
+            MediaStore.Audio.Media.DATE_ADDED,
+            MediaStore.Audio.Media.DATE_MODIFIED
         )
     }
 
@@ -514,6 +532,10 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 listVideos(albumId, newest, skip, take, lightWeight)
             }
 
+            audioType -> {
+                listAudios(albumId, newest, skip, take, lightWeight)
+            }
+
             else -> {
                 val images = listImages(albumId, newest, null, null, lightWeight)["items"] as List<Map<String, Any?>>
                 val videos = listVideos(albumId, newest, null, null, lightWeight)["items"] as List<Map<String, Any?>>
@@ -580,6 +602,32 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             videoCursor?.use { cursor ->
                 while (cursor.moveToNext()) {
                     val metadata = if (lightWeight == true) getVideoBriefMetadata(cursor) else getVideoMetadata(cursor)
+                    media.add(metadata)
+                }
+            }
+        }
+
+        return mapOf(
+            "start" to (skip ?: 0),
+            "items" to media
+        )
+    }
+    private fun listAudios(
+        albumId: String,
+        newest: Boolean,
+        skip: Int?,
+        take: Int?,
+        lightWeight: Boolean? = false
+    ): Map<String, Any?> {
+        val media = mutableListOf<Map<String, Any?>>()
+
+        this.context.run {
+            val projection = if (lightWeight == true) audioBriefMetadataProjection else audioMetadataProjection
+            val audioCursor = getAudioCursor(albumId, newest, projection, skip, take)
+
+            audioCursor?.use { cursor ->
+                while (cursor.moveToNext()) {
+                    val metadata = if (lightWeight == true) getAudioBriefMetadata(cursor) else getAudioMetadata(cursor)
                     media.add(metadata)
                 }
             }
@@ -996,6 +1044,59 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
     }
 
+
+    private fun getAudioCursor(
+        albumId: String,
+        newest: Boolean,
+        projection: Array<String>,
+        skip: Int?,
+        take: Int?
+    ): Cursor? {
+        this.context.run {
+            val isSelection = albumId != allAlbumId
+            val selection = if (isSelection) "${MediaStore.Audio.Media.BUCKET_ID} = ?" else null
+            val selectionArgs = if (isSelection) arrayOf(albumId) else null
+            val orderBy = if (newest) {
+                "${MediaStore.Audio.Media.DATE_ADDED} DESC, ${MediaStore.Audio.Media.DATE_MODIFIED} DESC"
+            } else {
+                "${MediaStore.Audio.Media.DATE_ADDED} ASC, ${MediaStore.Audio.Media.DATE_MODIFIED} ASC"
+            }
+
+            val audioCursor: Cursor?
+
+            if (Build.VERSION.SDK_INT > Build.VERSION_CODES.Q) {
+                audioCursor = this.contentResolver.query(
+                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    projection,
+                    android.os.Bundle().apply {
+                        // Selection
+                        putString(ContentResolver.QUERY_ARG_SQL_SELECTION, selection)
+                        putStringArray(ContentResolver.QUERY_ARG_SQL_SELECTION_ARGS, selectionArgs)
+                        // Sort
+                        putString(ContentResolver.QUERY_ARG_SQL_SORT_ORDER, orderBy)
+                        // Offset & Limit
+                        if (skip != null) putInt(ContentResolver.QUERY_ARG_OFFSET, skip)
+                        if (take != null) putInt(ContentResolver.QUERY_ARG_LIMIT, take)
+                    },
+                    null
+                )
+            } else {
+                val offset = if (skip != null) "OFFSET $skip" else ""
+                val limit = if (take != null) "LIMIT $take" else ""
+
+                audioCursor = this.contentResolver.query(
+                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    projection,
+                    selection,
+                    selectionArgs,
+                    "$orderBy $offset $limit"
+                )
+            }
+
+            return audioCursor
+        }
+    }
+
     private fun getFile(mediumId: String, mediumType: String?, mimeType: String?): String? {
         return when (mediumType) {
             imageType -> {
@@ -1245,6 +1346,7 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         )
     }
 
+
     private fun getVideoBriefMetadata(cursor: Cursor): Map<String, Any?> {
         val idColumn = cursor.getColumnIndex(MediaStore.Video.Media._ID)
         val widthColumn = cursor.getColumnIndex(MediaStore.Video.Media.WIDTH)
@@ -1271,6 +1373,70 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             "mediumType" to videoType,
             "width" to width,
             "height" to height,
+            "duration" to duration,
+            "creationDate" to dateAdded,
+            "modifiedDate" to dateModified
+        )
+    }
+
+    private fun getAudioMetadata(cursor: Cursor): Map<String, Any?> {
+        val idColumn = cursor.getColumnIndex(MediaStore.Audio.Media._ID)
+        val filenameColumn = cursor.getColumnIndex(MediaStore.Audio.Media.DISPLAY_NAME)
+        val titleColumn = cursor.getColumnIndex(MediaStore.Audio.Media.TITLE)
+        val sizeColumn = cursor.getColumnIndex(MediaStore.Audio.Media.SIZE)
+        val mimeColumn = cursor.getColumnIndex(MediaStore.Audio.Media.MIME_TYPE)
+        val durationColumn = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
+        val dateAddedColumn = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_ADDED)
+        val dateModifiedColumn = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_MODIFIED)
+
+        val id = cursor.getLong(idColumn)
+        val filename = cursor.getString(filenameColumn)
+        val title = cursor.getString(titleColumn)
+        val size = cursor.getLong(sizeColumn)
+        val mimeType = cursor.getString(mimeColumn)
+        val duration = cursor.getLong(durationColumn)
+        var dateAdded: Long? = null
+        if (cursor.getType(dateAddedColumn) == FIELD_TYPE_INTEGER) {
+            dateAdded = cursor.getLong(dateAddedColumn) * 1000
+        }
+        var dateModified: Long? = null
+        if (cursor.getType(dateModifiedColumn) == FIELD_TYPE_INTEGER) {
+            dateModified = cursor.getLong(dateModifiedColumn) * 1000
+        }
+
+        return mapOf(
+            "id" to id.toString(),
+            "filename" to filename,
+            "title" to title,
+            "mediumType" to videoType,
+            "size" to size,
+            "mimeType" to mimeType,
+            "duration" to duration,
+            "creationDate" to dateAdded,
+            "modifiedDate" to dateModified
+        )
+    }
+
+    private fun getAudioBriefMetadata(cursor: Cursor): Map<String, Any?> {
+        val idColumn = cursor.getColumnIndex(MediaStore.Audio.Media._ID)
+        val durationColumn = cursor.getColumnIndex(MediaStore.Audio.Media.DURATION)
+        val dateAddedColumn = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_ADDED)
+        val dateModifiedColumn = cursor.getColumnIndex(MediaStore.Audio.Media.DATE_MODIFIED)
+
+        val id = cursor.getLong(idColumn)
+        val duration = cursor.getLong(durationColumn)
+        var dateAdded: Long? = null
+        if (cursor.getType(dateAddedColumn) == FIELD_TYPE_INTEGER) {
+            dateAdded = cursor.getLong(dateAddedColumn) * 1000
+        }
+        var dateModified: Long? = null
+        if (cursor.getType(dateModifiedColumn) == FIELD_TYPE_INTEGER) {
+            dateModified = cursor.getLong(dateModifiedColumn) * 1000
+        }
+
+        return mapOf(
+            "id" to id.toString(),
+            "mediumType" to audioType,
             "duration" to duration,
             "creationDate" to dateAdded,
             "modifiedDate" to dateModified
