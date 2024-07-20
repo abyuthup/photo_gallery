@@ -649,6 +649,10 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 getVideoMedia(mediumId)
             }
 
+            audioType -> {
+                getAudioMedia(mediumId)
+            }
+
             else -> {
                 getImageMedia(mediumId) ?: getVideoMedia(mediumId)
             }
@@ -695,6 +699,26 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
     }
 
+    private fun getAudioMedia(mediumId: String): Map<String, Any?>? {
+        return this.context.run {
+            val audioCursor = this.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                audioMetadataProjection,
+                "${MediaStore.Audio.Media._ID} = ?",
+                arrayOf(mediumId),
+                null
+            )
+
+            audioCursor?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    return@run getAudioMetadata(cursor)
+                }
+            }
+
+            return@run null
+        }
+    }
+
     private fun getThumbnail(
         mediumId: String,
         mediumType: String?,
@@ -711,9 +735,14 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 getVideoThumbnail(mediumId, width, height, highQuality)
             }
 
+            /*audioType -> {
+                getAudioThumbnail(mediumId, width, height, highQuality)
+            }*/
+
             else -> {
-                getImageThumbnail(mediumId, width, height, highQuality)
-                    ?: getVideoThumbnail(mediumId, width, height, highQuality)
+               /* getImageThumbnail(mediumId, width, height, highQuality)
+                    ?: getVideoThumbnail(mediumId, width, height, highQuality)*/
+                return null
             }
         }
     }
