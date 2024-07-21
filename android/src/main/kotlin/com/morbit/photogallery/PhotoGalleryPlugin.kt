@@ -246,9 +246,7 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
             //get all music files
             "getAllMusicFiles" -> {
-
                 Log.e("LINSLOG", "getAllMusicFiles: 1");
-
 
                 result.success(
                     getMusicDataJson()
