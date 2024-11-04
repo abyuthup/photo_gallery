@@ -32,20 +32,19 @@ import java.util.concurrent.Executors
 /** PhotoGalleryPlugin */
 class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     companion object {
-        // This static function is optional and equivalent to onAttachedToEngine. It supports the old
-        // pre-Flutter-1.12 Android projects. You are encouraged to continue supporting
-        // plugin registration via this function while apps migrate to use the new Android APIs
-        // post-flutter-1.12 via https://flutter.dev/go/android-project-migration.
-        //
-        // It is encouraged to share logic between onAttachedToEngine and registerWith to keep
-        // them functionally equivalent. Only one of onAttachedToEngine or registerWith will be called
-        // depending on the user's project. onAttachedToEngine or registerWith must both be defined
-        // in the same class.
+
+
+        /*fun registerWith(registrar: Registrar) {
+            val channel = MethodChannel(registrar.messenger(), "photo_gallery")
+            val plugin = PhotoGalleryPlugin()
+            plugin.context = registrar.activeContext()
+            channel.setMethodCallHandler(plugin)
+        }*/
         @JvmStatic
         fun registerWith(registrar: Registrar) {
             val channel = MethodChannel(registrar.messenger(), "photo_gallery")
             val plugin = PhotoGalleryPlugin()
-            plugin.context = registrar.activeContext()
+            plugin.context = registrar.activeContext().applicationContext // Ensure application context is used
             channel.setMethodCallHandler(plugin)
         }
 
@@ -121,7 +120,7 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     }
 
     private lateinit var channel: MethodChannel
-    private lateinit var context: Context
+    lateinit var context: Context
     private var activity: Activity? = null
 
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -280,7 +279,7 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             }
         }
     }
-    fun getMusicDataJson(): String {
+    private fun getMusicDataJson(): String {
         val jsonRoot = JSONObject()
 
         try {
