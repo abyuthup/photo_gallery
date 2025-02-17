@@ -23,8 +23,12 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin
-import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
+import io.flutter.embedding.engine.plugins.activity.ActivityPluginBinding
+import io.flutter.plugin.common.MethodCall
+import io.flutter.plugin.common.MethodChannel
+import io.flutter.plugin.common.MethodChannel.MethodCallHandler
+
 
 class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
@@ -102,6 +106,9 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private lateinit var context: Context
     private var activity: Activity? = null
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
+
+
+
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         context = flutterPluginBinding.applicationContext
