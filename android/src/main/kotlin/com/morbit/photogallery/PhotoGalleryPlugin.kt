@@ -29,25 +29,9 @@ import java.util.Collections
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
-/** PhotoGalleryPlugin */
 class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
+
     companion object {
-
-
-        /*fun registerWith(registrar: Registrar) {
-            val channel = MethodChannel(registrar.messenger(), "photo_gallery")
-            val plugin = PhotoGalleryPlugin()
-            plugin.context = registrar.activeContext()
-            channel.setMethodCallHandler(plugin)
-        }*/
-        @JvmStatic
-        fun registerWith(registrar: Registrar) {
-            val channel = MethodChannel(registrar.messenger(), "photo_gallery")
-            val plugin = PhotoGalleryPlugin()
-            plugin.context = registrar.activeContext().applicationContext // Ensure application context is used
-            channel.setMethodCallHandler(plugin)
-        }
-
         const val imageType = "image"
         const val videoType = "video"
         const val audioType = "audio"
@@ -107,9 +91,7 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             MediaStore.Audio.Media.DURATION,
             MediaStore.Audio.Media.DATE_ADDED,
             MediaStore.Audio.Media.DATE_MODIFIED
-
         )
-
 
         val audioBriefMetadataProjection = arrayOf(
             MediaStore.Audio.Media._ID,
@@ -120,36 +102,35 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     }
 
     private lateinit var channel: MethodChannel
-    lateinit var context: Context
+    private lateinit var context: Context
     private var activity: Activity? = null
-
     private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
+        context = flutterPluginBinding.applicationContext
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, "photo_gallery")
-        val plugin = this
-        plugin.context = flutterPluginBinding.applicationContext
-        channel.setMethodCallHandler(plugin)
+        channel.setMethodCallHandler(this)
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
+        executor.shutdown() // Ensure proper cleanup
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
-        this.activity = binding.activity;
+        activity = binding.activity
     }
 
     override fun onReattachedToActivityForConfigChanges(binding: ActivityPluginBinding) {
-        this.activity = binding.activity;
+        activity = binding.activity
     }
 
     override fun onDetachedFromActivity() {
-        this.activity = null
+        activity = null
     }
 
     override fun onDetachedFromActivityForConfigChanges() {
-        this.activity = null
+        activity = null
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {

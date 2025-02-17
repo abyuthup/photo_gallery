@@ -2,14 +2,15 @@ group 'com.morbit.photogallery'
 version '1.0-SNAPSHOT'
 
 buildscript {
-    ext.kotlin_version = '1.7.10'
+    ext.kotlin_version = '1.9.22'  // Downgraded for compatibility
+
     repositories {
         google()
         mavenCentral()
     }
 
     dependencies {
-        classpath 'com.android.tools.build:gradle:7.2.2'
+        classpath 'com.android.tools.build:gradle:8.2.0'  // More stable AGP version
         classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
     }
 }
@@ -25,7 +26,7 @@ apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
 android {
-    compileSdk 33
+    compileSdk 34
     namespace 'com.morbit.photogallery'
 
     compileOptions {
@@ -42,7 +43,7 @@ android {
     }
 
     defaultConfig {
-        minSdkVersion 16
+        minSdkVersion 23
     }
 
     lintOptions {
@@ -51,6 +52,5 @@ android {
 }
 
 dependencies {
-// implementation files('/Users/linslouis/Developer/flutter/bin/cache/artifacts/engine/android-arm64-release/flutter.jar')
-    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
+    implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"  // Updated dependency
 }
