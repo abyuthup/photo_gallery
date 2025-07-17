@@ -185,6 +185,18 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                 }
             }
 
+            "getVideoThumbnailFromPath" -> {
+                val videoPath = call.argument<String>("videoPath")
+                val width = call.argument<Int>("width")
+                val timeMs = call.argument<Int>("timeMs")
+                val quality = call.argument<Int>("quality")
+                executor.submit {
+                    result.success(
+                        getVideoThumbnailFromPath(videoPath!!, width, timeMs, quality)
+                    )
+                }
+            }
+
             "getAlbumThumbnail" -> {
                 val albumId = call.argument<String>("albumId")
                 val mediumType = call.argument<String>("mediumType")
@@ -1619,5 +1631,38 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private fun cleanCache() {
         val cachePath = getCachePath()
         cachePath.deleteRecursively()
+    }
+
+    private fun getVideoThumbnailFromPath(videoPath: String, width: Int?, timeMs: Int?, quality: Int?): ByteArray? {
+        var byteArray: ByteArray? = null
+        
+        try {
+            val retriever = android.media.MediaMetadataRetriever()
+            retriever.setDataSource(videoPath)
+            
+            val timeUs = (timeMs ?: 0) * 1000L // Convert milliseconds to microseconds
+            var bitmap = retriever.getFrameAtTime(timeUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+            
+            if (bitmap != null) {
+                // Resize bitmap if width is specified and not -1
+                if (width != null && width != -1) {
+                    val aspectRatio = bitmap.height.toFloat() / bitmap.width.toFloat()
+                    val targetHeight = (width * aspectRatio).toInt()
+                    bitmap = Bitmap.createScaledBitmap(bitmap, width, targetHeight, true)
+                }
+                
+                ByteArrayOutputStream().use { stream ->
+                    val compressionQuality = quality ?: 100
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, compressionQuality, stream)
+                    byteArray = stream.toByteArray()
+                }
+            }
+            
+            retriever.release()
+        } catch (e: Exception) {
+            Log.e("PhotoGallery", "Error getting video thumbnail: ${e.message}")
+        }
+        
+        return byteArray
     }
 }

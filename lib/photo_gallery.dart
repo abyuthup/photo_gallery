@@ -66,7 +66,6 @@ class PhotoGallery {
     bool newest = true,
     bool hideIfEmpty = true,
   }) async {
-
     // 1. fist list all audio file with file path
 
     //
@@ -76,14 +75,11 @@ class PhotoGallery {
     // 2. then group this file list to albums based on file path
     // album name is directory name of file path
 
-
     return json
         .map<Album>((album) => Album.fromJson(album, mediumType, newest))
         .toList();
   }
 // ----------------- New Function ----------------//
-
-
 
   //listAllMusic
   static Future<List<Album>> listAllMusic({
@@ -100,6 +96,7 @@ class PhotoGallery {
         .map<Album>((album) => Album.fromJson(album, mediumType, newest))
         .toList();
   }
+
   /// List all available media in a specific album, support pagination of media
   static Future<MediaPage> _listMedia({
     required Album album,
@@ -146,6 +143,23 @@ class PhotoGallery {
       'highQuality': highQuality,
     });
     if (bytes == null) throw "Failed to fetch thumbnail of medium $mediumId";
+    return List<int>.from(bytes);
+  }
+
+  /// Get video thumbnail from video file path
+  static Future<List<int>> getVideoThumbnailFromPath({
+    required String videoPath,
+    int width = -1,
+    int timeMs = 0,
+    int quality = 100,
+  }) async {
+    final bytes = await _channel.invokeMethod('getVideoThumbnailFromPath', {
+      'videoPath': videoPath,
+      'width': width,
+      'timeMs': timeMs,
+      'quality': quality,
+    });
+    if (bytes == null) throw "Failed to fetch video thumbnail from $videoPath";
     return List<int>.from(bytes);
   }
 

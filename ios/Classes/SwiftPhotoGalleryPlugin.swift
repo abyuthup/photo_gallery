@@ -3,6 +3,7 @@ import MobileCoreServices
 import Flutter
 import UIKit
 import Photos
+import AVFoundation
 
 public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
   public static func register(with registrar: FlutterPluginRegistrar) {
@@ -56,6 +57,22 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
         width: width,
         height: height,
         highQuality: highQuality,
+        completion: { (data: Data?, error: Error?) -> Void in
+          result(data)
+        }
+      )
+    }
+    else if(call.method == "getVideoThumbnailFromPath") {
+      let arguments = call.arguments as! Dictionary<String, AnyObject>
+      let videoPath = arguments["videoPath"] as! String
+      let width = arguments["width"] as? Int
+      let timeMs = arguments["timeMs"] as? Int
+      let quality = arguments["quality"] as? Int
+      getVideoThumbnailFromPath(
+        videoPath: videoPath,
+        width: width,
+        timeMs: timeMs,
+        quality: quality,
         completion: { (data: Data?, error: Error?) -> Void in
           result(data)
         }
@@ -304,6 +321,56 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     }
 
     completion(nil, NSError(domain: "photo_gallery", code: 404, userInfo: nil))
+  }
+
+  private func getVideoThumbnailFromPath(
+    videoPath: String,
+    width: Int?,
+    timeMs: Int?,
+    quality: Int?,
+    completion: @escaping (Data?, Error?) -> Void
+  ) {
+    guard let url = URL(string: videoPath.hasPrefix("file://") ? videoPath : "file://\(videoPath)") else {
+      completion(nil, NSError(domain: "photo_gallery", code: 400, userInfo: [NSLocalizedDescriptionKey: "Invalid video path"]))
+      return
+    }
+    
+    let asset = AVAsset(url: url)
+    let imageGenerator = AVAssetImageGenerator(asset: asset)
+    imageGenerator.appliesPreferredTrackTransform = true
+    
+    let time = CMTime(seconds: Double(timeMs ?? 0) / 1000.0, preferredTimescale: 600)
+    
+    imageGenerator.generateCGImagesAsynchronously(forTimes: [NSValue(time: time)]) { (requestedTime, cgImage, actualTime, result, error) in
+      DispatchQueue.main.async {
+        guard let cgImage = cgImage else {
+          completion(nil, error ?? NSError(domain: "photo_gallery", code: 404, userInfo: [NSLocalizedDescriptionKey: "Could not generate thumbnail"]))
+          return
+        }
+        
+        var image = UIImage(cgImage: cgImage)
+        
+        // Resize image if width is specified and not -1
+        if let targetWidth = width, targetWidth != -1 {
+          let aspectRatio = image.size.height / image.size.width
+          let targetHeight = CGFloat(targetWidth) * aspectRatio
+          let targetSize = CGSize(width: CGFloat(targetWidth), height: targetHeight)
+          
+          UIGraphicsBeginImageContextWithOptions(targetSize, false, 0.0)
+          image.draw(in: CGRect(origin: .zero, size: targetSize))
+          image = UIGraphicsGetImageFromCurrentImageContext() ?? image
+          UIGraphicsEndImageContext()
+        }
+        
+        let compressionQuality = CGFloat(quality ?? 100) / 100.0
+        guard let jpegData = image.jpegData(compressionQuality: compressionQuality) else {
+          completion(nil, NSError(domain: "photo_gallery", code: 500, userInfo: [NSLocalizedDescriptionKey: "Could not convert image to JPEG"]))
+          return
+        }
+        
+        completion(jpegData, nil)
+      }
+    }
   }
 
   private func getAlbumThumbnail(
