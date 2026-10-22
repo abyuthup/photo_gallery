@@ -159,7 +159,9 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     // Unit can't go through the message codec; reply null instead.
                     val value = block().takeUnless { it == Unit }
                     mainHandler.post { result.success(value) }
-                } catch (e: Exception) {
+                } catch (e: Throwable) {
+                    // Throwable, not Exception: an OutOfMemoryError while decoding must
+                    // still reply, or the Dart future never completes.
                     Log.e(TAG, "Platform call failed", e)
                     mainHandler.post { result.error(e.javaClass.simpleName, e.message, null) }
                 }
@@ -1682,7 +1684,12 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             Log.e(TAG, "Error getting video thumbnail: ${e.message}")
             return null
         } finally {
-            retriever.release()
+            // release() can throw on API 29+; don't let it replace a valid frame.
+            try {
+                retriever.release()
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to release MediaMetadataRetriever", e)
+            }
         }
     }
 }

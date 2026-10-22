@@ -14,6 +14,11 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
 
   // File copies and exports run here so they never block the main thread.
   private let fileQueue = DispatchQueue(label: "photo_gallery.file", qos: .userInitiated)
+  // Library queries run here, off the main thread. Serial, and the only place
+  // that touches assetCollections, so the album cache needs no locking.
+  private let queryQueue = DispatchQueue(label: "photo_gallery.query", qos: .userInitiated)
+  // UIScreen may only be read on the main thread; the plugin is created there.
+  private let screenScale: CGFloat = UIScreen.main.scale
 
   private static let thumbnailJpegQuality: CGFloat = 0.8
 
@@ -23,7 +28,10 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     if(call.method == "listAlbums") {
       let mediumType = arguments["mediumType"] as? String
       let hideIfEmpty = arguments["hideIfEmpty"] as? Bool
-      result(listAlbums(mediumType: mediumType, hideIfEmpty: hideIfEmpty))
+      queryQueue.async {
+        let albums = self.listAlbums(mediumType: mediumType, hideIfEmpty: hideIfEmpty)
+        DispatchQueue.main.async { result(albums) }
+      }
     }
     else if(call.method == "listMedia") {
       guard let albumId = arguments["albumId"] as? String else {
@@ -35,25 +43,30 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
       let skip = arguments["skip"] as? NSNumber
       let take = arguments["take"] as? NSNumber
       let lightWeight = arguments["lightWeight"] as? Bool
-      result(listMedia(
-        albumId: albumId,
-        mediumType: mediumType,
-        newest: newest,
-        skip: skip,
-        take: take,
-        lightWeight: lightWeight
-      ))
+      queryQueue.async {
+        let media = self.listMedia(
+          albumId: albumId,
+          mediumType: mediumType,
+          newest: newest,
+          skip: skip,
+          take: take,
+          lightWeight: lightWeight
+        )
+        DispatchQueue.main.async { result(media) }
+      }
     }
     else if(call.method == "getMedium") {
       guard let mediumId = arguments["mediumId"] as? String else {
         result(missingArgument("mediumId"))
         return
       }
-      do {
-        let medium = try getMedium(mediumId: mediumId)
-        result(medium)
-      } catch {
-        result(flutterError(error, fallbackCode: "NOT_FOUND"))
+      queryQueue.async {
+        do {
+          let medium = try self.getMedium(mediumId: mediumId)
+          DispatchQueue.main.async { result(medium) }
+        } catch {
+          DispatchQueue.main.async { result(self.flutterError(error, fallbackCode: "NOT_FOUND")) }
+        }
       }
     }
     else if(call.method == "getThumbnail") {
@@ -102,17 +115,19 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
       let width = arguments["width"] as? Int
       let height = arguments["height"] as? Int
       let highQuality = arguments["highQuality"] as? Bool
-      getAlbumThumbnail(
-        albumId: albumId,
-        mediumType: mediumType,
-        newest: newest,
-        width: width,
-        height: height,
-        highQuality: highQuality,
-        completion: { (data: Data?, error: Error?) -> Void in
-          self.reply(result, data: data, error: error)
-        }
-      )
+      queryQueue.async {
+        self.getAlbumThumbnail(
+          albumId: albumId,
+          mediumType: mediumType,
+          newest: newest,
+          width: width,
+          height: height,
+          highQuality: highQuality,
+          completion: { (data: Data?, error: Error?) -> Void in
+            self.reply(result, data: data, error: error)
+          }
+        )
+      }
     }
     else if(call.method == "getFile") {
       guard let mediumId = arguments["mediumId"] as? String else {
@@ -164,11 +179,14 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     return FlutterError(code: "INVALID_ARGUMENT", message: "Missing required argument '\(name)'", details: nil)
   }
 
-  private func reply(_ result: FlutterResult, data: Data?, error: Error?) {
-    if let data = data {
-      result(data)
+  /// Replies on the main thread, as Flutter requires, whichever queue the
+  /// Photos callback arrived on.
+  private func reply(_ result: @escaping FlutterResult, data: Data?, error: Error?) {
+    let value: Any = data ?? flutterError(error, fallbackCode: "NOT_FOUND")
+    if Thread.isMainThread {
+      result(value)
     } else {
-      result(flutterError(error, fallbackCode: "NOT_FOUND"))
+      DispatchQueue.main.async { result(value) }
     }
   }
 
@@ -183,10 +201,9 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
 
   private func listAlbums(mediumType: String?, hideIfEmpty: Bool? = true) -> [[String: Any?]] {
     self.assetCollections = []
+    // No fetchLimit here: these options go to the album fetches, and a limit
+    // of 1 listed only the first smart album and the first user album.
     let fetchOptions = PHFetchOptions()
-    if #available(iOS 9, *) {
-      fetchOptions.fetchLimit = 1
-    }
     var albums = [[String: Any?]]()
     var albumIds = Set<String>()
 
@@ -264,6 +281,15 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     return PHAsset.fetchAssets(in: collection ?? PHAssetCollection.init(), options: options).count
   }
 
+  /// The album with [albumId]: from the cache filled by listAlbums, or fetched
+  /// directly when listAlbums has not run in this session.
+  private func collection(albumId: String) -> PHAssetCollection? {
+    if let cached = self.assetCollections.first(where: { $0.localIdentifier == albumId }) {
+      return cached
+    }
+    return PHAssetCollection.fetchAssetCollections(withLocalIdentifiers: [albumId], options: nil).firstObject
+  }
+
   private func listMedia(
     albumId: String,
     mediumType: String?,
@@ -279,18 +305,13 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
       NSSortDescriptor(key: "modificationDate", ascending: newest ? false : true)
     ]
 
-    let collection = self.assetCollections.first(where: { (collection) -> Bool in
-      collection.localIdentifier == albumId
-    })
-
     let fetchResult: PHFetchResult<PHAsset>
     if(albumId == "__ALL__") {
       fetchResult = PHAsset.fetchAssets(with: fetchOptions)
+    } else if let collection = self.collection(albumId: albumId) {
+      fetchResult = PHAsset.fetchAssets(in: collection, options: fetchOptions)
     } else {
-      fetchResult = PHAsset.fetchAssets(
-        in: collection ?? PHAssetCollection.init(),
-        options: fetchOptions
-      )
+      return ["start": skip?.intValue ?? 0, "items": [[String: Any?]]()]
     }
     let start = skip?.intValue ?? 0
     let total = fetchResult.count
@@ -353,8 +374,8 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
       manager.requestImage(
         for: asset,
         targetSize: CGSize(
-          width: imageSize.width * UIScreen.main.scale,
-          height: imageSize.height * UIScreen.main.scale
+          width: imageSize.width * self.screenScale,
+          height: imageSize.height * self.screenScale
         ),
         contentMode: PHImageContentMode.aspectFill,
         options: options,
@@ -447,10 +468,11 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     let assets: PHFetchResult<PHAsset>
     if(albumId == "__ALL__") {
       assets = PHAsset.fetchAssets(with: fetchOptions)
+    } else if let collection = self.collection(albumId: albumId) {
+      assets = PHAsset.fetchAssets(in: collection, options: fetchOptions)
     } else {
-      assets = PHAsset.fetchAssets(in: self.assetCollections.first(where: { (collection) -> Bool in
-        collection.localIdentifier == albumId
-      })!, options: fetchOptions)
+      completion(nil, NSError(domain: "photo_gallery", code: 404, userInfo: nil))
+      return
     }
 
     if (assets.count > 0) {
@@ -466,8 +488,8 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
       manager.requestImage(
         for: asset,
         targetSize: CGSize(
-          width: imageSize.width * UIScreen.main.scale,
-          height: imageSize.height * UIScreen.main.scale
+          width: imageSize.width * self.screenScale,
+          height: imageSize.height * self.screenScale
         ),
         contentMode: PHImageContentMode.aspectFill,
         options: options,
@@ -558,7 +580,11 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
                 // Slow-motion and edited videos come back as an AVComposition with no
                 // backing file, so they have to be rendered out.
                 let filepath = try self.exportPathForAsset(asset: asset, ext: ".mov")
-                self.exportComposition(composition, to: filepath, completion: finish)
+                if self.isExportFresh(filepath, asset: asset) {
+                  finish(filepath.absoluteString, nil)
+                } else {
+                  self.exportComposition(composition, to: filepath, completion: finish)
+                }
               } else {
                 finish(nil, (info?[PHImageErrorKey] as? Error) ?? NSError(domain: "photo_gallery", code: 404, userInfo: nil))
               }
@@ -574,13 +600,16 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
   }
 
   /// Streams the file on disk instead of loading it into memory, and reuses an
-  /// earlier copy when it is still complete.
+  /// earlier copy of the same source file. copyItem keeps the source's
+  /// modification date, so matching size and date means the copy is current.
   private func copyFileIfNeeded(from source: URL, to destination: URL) throws {
     let fileManager = FileManager.default
     if fileManager.fileExists(atPath: destination.path) {
-      let sourceSize = try fileManager.attributesOfItem(atPath: source.path)[.size] as? NSNumber
-      let destinationSize = try fileManager.attributesOfItem(atPath: destination.path)[.size] as? NSNumber
-      if sourceSize != nil && sourceSize == destinationSize {
+      let sourceAttributes = try fileManager.attributesOfItem(atPath: source.path)
+      let destinationAttributes = try fileManager.attributesOfItem(atPath: destination.path)
+      let sameSize = (sourceAttributes[.size] as? NSNumber) == (destinationAttributes[.size] as? NSNumber)
+      let sameDate = (sourceAttributes[.modificationDate] as? Date) == (destinationAttributes[.modificationDate] as? Date)
+      if sameSize && sameDate {
         return
       }
       try fileManager.removeItem(at: destination)
@@ -588,21 +617,42 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     try fileManager.copyItem(at: source, to: destination)
   }
 
-  private func exportComposition(_ avAsset: AVAsset, to destination: URL, completion: @escaping (String?, Error?) -> Void) {
-    if FileManager.default.fileExists(atPath: destination.path) {
-      try? FileManager.default.removeItem(at: destination)
+  /// An export only lands at its final path once complete, so one written after
+  /// the asset last changed can be reused instead of rendering again.
+  private func isExportFresh(_ url: URL, asset: PHAsset) -> Bool {
+    guard let written = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.modificationDate] as? Date else {
+      return false
     }
+    return written >= (asset.modificationDate ?? .distantPast)
+  }
+
+  private func exportComposition(_ avAsset: AVAsset, to destination: URL, completion: @escaping (String?, Error?) -> Void) {
     guard let session = AVAssetExportSession(asset: avAsset, presetName: AVAssetExportPresetHighestQuality) else {
       completion(nil, NSError(domain: "photo_gallery", code: 500, userInfo: nil))
       return
     }
-    session.outputURL = destination
+    // Render to a temporary file so an interrupted export never leaves a
+    // partial file at the path that gets reused.
+    let temporary = destination.deletingLastPathComponent()
+      .appendingPathComponent(UUID().uuidString + ".mov")
+    session.outputURL = temporary
     session.outputFileType = .mov
     session.exportAsynchronously {
-      if session.status == .completed {
-        completion(destination.absoluteString, nil)
-      } else {
+      let fileManager = FileManager.default
+      guard session.status == .completed else {
+        try? fileManager.removeItem(at: temporary)
         completion(nil, session.error ?? NSError(domain: "photo_gallery", code: 500, userInfo: nil))
+        return
+      }
+      do {
+        if fileManager.fileExists(atPath: destination.path) {
+          try fileManager.removeItem(at: destination)
+        }
+        try fileManager.moveItem(at: temporary, to: destination)
+        completion(destination.absoluteString, nil)
+      } catch {
+        try? fileManager.removeItem(at: temporary)
+        completion(nil, error)
       }
     }
   }
