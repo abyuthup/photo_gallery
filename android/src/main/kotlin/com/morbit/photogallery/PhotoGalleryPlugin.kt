@@ -10,6 +10,8 @@ import android.database.Cursor.FIELD_TYPE_INTEGER
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.MediaStore
 import android.util.Log
 import android.util.Size
@@ -21,6 +23,7 @@ import java.io.FileOutputStream
 import java.util.Collections
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.embedding.engine.plugins.activity.ActivityAware
@@ -39,6 +42,9 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
         const val allAlbumId = "__ALL__"
         const val allAlbumName = "All"
+
+        private const val TAG = "PhotoGallery"
+        private const val THUMBNAIL_JPEG_QUALITY = 80
 
         val imageMetadataProjection = arrayOf(
             MediaStore.Images.Media._ID,
@@ -105,10 +111,13 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
     private lateinit var channel: MethodChannel
     private lateinit var context: Context
     private var activity: Activity? = null
-    private val executor: ExecutorService = Executors.newSingleThreadExecutor()
 
-
-
+    // Thumbnails decode in parallel so a grid screen loads at once; listing and file
+    // copies stay serial and on their own threads so they never block thumbnails.
+    private val thumbnailExecutor: ExecutorService = Executors.newFixedThreadPool(4)
+    private val queryExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val fileExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         context = flutterPluginBinding.applicationContext
@@ -118,7 +127,9 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
         channel.setMethodCallHandler(null)
-        executor.shutdown() // Ensure proper cleanup
+        thumbnailExecutor.shutdown()
+        queryExecutor.shutdown()
+        fileExecutor.shutdown()
     }
 
     override fun onAttachedToActivity(binding: ActivityPluginBinding) {
@@ -137,118 +148,127 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         activity = null
     }
 
+    /**
+     * Runs [block] on [executor] and always completes [result] on the main thread,
+     * with an error instead of a silently dropped reply when [block] throws.
+     */
+    private fun runAsync(executor: ExecutorService, result: MethodChannel.Result, block: () -> Any?) {
+        try {
+            executor.execute {
+                try {
+                    // Unit can't go through the message codec; reply null instead.
+                    val value = block().takeUnless { it == Unit }
+                    mainHandler.post { result.success(value) }
+                } catch (e: Exception) {
+                    Log.e(TAG, "Platform call failed", e)
+                    mainHandler.post { result.error(e.javaClass.simpleName, e.message, null) }
+                }
+            }
+        } catch (e: RejectedExecutionException) {
+            result.error("UNAVAILABLE", "Plugin is detached", null)
+        }
+    }
+
+    private fun MethodChannel.Result.missingArgument(name: String) =
+        error("INVALID_ARGUMENT", "Missing required argument '$name'", null)
+
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "listAlbums" -> {
                 val mediumType = call.argument<String>("mediumType")
-                executor.submit {
-                    result.success(
-                        listAlbums(mediumType)
-                    )
+                runAsync(queryExecutor, result) {
+                    listAlbums(mediumType)
                 }
             }
 
             "listMedia" -> {
                 val albumId = call.argument<String>("albumId")
+                    ?: return result.missingArgument("albumId")
                 val mediumType = call.argument<String>("mediumType")
-                val newest = call.argument<Boolean>("newest")
+                val newest = call.argument<Boolean>("newest") ?: true
                 val skip = call.argument<Int>("skip")
                 val take = call.argument<Int>("take")
                 val lightWeight = call.argument<Boolean>("lightWeight")
-                executor.submit {
-                    result.success(
-                        listMedia(mediumType, albumId!!, newest!!, skip, take, lightWeight)
-                    )
+                runAsync(queryExecutor, result) {
+                    listMedia(mediumType, albumId, newest, skip, take, lightWeight)
                 }
             }
 
             "getMedium" -> {
                 val mediumId = call.argument<String>("mediumId")
+                    ?: return result.missingArgument("mediumId")
                 val mediumType = call.argument<String>("mediumType")
-                executor.submit {
-                    result.success(
-                        getMedium(mediumId!!, mediumType)
-                    )
+                runAsync(queryExecutor, result) {
+                    getMedium(mediumId, mediumType)
                 }
             }
 
             "getThumbnail" -> {
                 val mediumId = call.argument<String>("mediumId")
+                    ?: return result.missingArgument("mediumId")
                 val mediumType = call.argument<String>("mediumType")
                 val width = call.argument<Int>("width")
                 val height = call.argument<Int>("height")
                 val highQuality = call.argument<Boolean>("highQuality")
-                executor.submit {
-                    result.success(
-                        getThumbnail(mediumId!!, mediumType, width, height, highQuality)
-                    )
+                runAsync(thumbnailExecutor, result) {
+                    getThumbnail(mediumId, mediumType, width, height, highQuality)
                 }
             }
 
             "getVideoThumbnailFromPath" -> {
                 val videoPath = call.argument<String>("videoPath")
+                    ?: return result.missingArgument("videoPath")
                 val width = call.argument<Int>("width")
-                val timeMs = call.argument<Int>("timeMs")
+                // Number, not Int: the codec sends values above Int.MAX_VALUE as Long.
+                val timeMs = call.argument<Number>("timeMs")?.toLong()
                 val quality = call.argument<Int>("quality")
-                executor.submit {
-                    result.success(
-                        getVideoThumbnailFromPath(videoPath!!, width, timeMs, quality)
-                    )
+                runAsync(thumbnailExecutor, result) {
+                    getVideoThumbnailFromPath(videoPath, width, timeMs, quality)
                 }
             }
 
             "getAlbumThumbnail" -> {
                 val albumId = call.argument<String>("albumId")
+                    ?: return result.missingArgument("albumId")
                 val mediumType = call.argument<String>("mediumType")
-                val newest = call.argument<Boolean>("newest")
+                val newest = call.argument<Boolean>("newest") ?: true
                 val width = call.argument<Int>("width")
                 val height = call.argument<Int>("height")
                 val highQuality = call.argument<Boolean>("highQuality")
-                executor.submit {
-                    result.success(
-                        getAlbumThumbnail(albumId!!, mediumType, newest!!, width, height, highQuality)
-                    )
+                runAsync(thumbnailExecutor, result) {
+                    getAlbumThumbnail(albumId, mediumType, newest, width, height, highQuality)
                 }
             }
 
             "getFile" -> {
                 val mediumId = call.argument<String>("mediumId")
+                    ?: return result.missingArgument("mediumId")
                 val mediumType = call.argument<String>("mediumType")
                 val mimeType = call.argument<String>("mimeType")
-                executor.submit {
-                    result.success(
-                        getFile(mediumId!!, mediumType, mimeType)
-                    )
+                runAsync(fileExecutor, result) {
+                    getFile(mediumId, mediumType, mimeType)
                 }
             }
 
             "deleteMedium" -> {
                 val mediumId = call.argument<String>("mediumId")
+                    ?: return result.missingArgument("mediumId")
                 val mediumType = call.argument<String>("mediumType")
-                executor.submit {
-                    result.success(
-                        deleteMedium(mediumId!!, mediumType)
-                    )
+                runAsync(fileExecutor, result) {
+                    deleteMedium(mediumId, mediumType)
                 }
             }
 
             "cleanCache" -> {
-                executor.submit {
-                    result.success(
-                        cleanCache()
-                    )
+                runAsync(fileExecutor, result) {
+                    cleanCache()
                 }
             }
 
-            //get all music files
             "getAllMusicFiles" -> {
-                Log.e("LINSLOG", "getAllMusicFiles: 1");
-
-                result.success(
+                runAsync(queryExecutor, result) {
                     getMusicDataJson()
-                )
-
-
+                }
             }
 
             else -> result.notImplemented()
@@ -341,7 +361,7 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
             e.printStackTrace()
         }
 
-        return jsonRoot.toString(4)
+        return jsonRoot.toString()
     }
     private fun listImageAlbums(): Map<String, Map<String, Any>> {
         this.context.run {
@@ -769,9 +789,10 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
         bitmap?.run {
             ByteArrayOutputStream().use { stream ->
-                this.compress(Bitmap.CompressFormat.JPEG, 100, stream)
+                this.compress(Bitmap.CompressFormat.JPEG, THUMBNAIL_JPEG_QUALITY, stream)
                 byteArray = stream.toByteArray()
             }
+            recycle()
         }
 
         return byteArray
@@ -805,9 +826,10 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
         bitmap?.run {
             ByteArrayOutputStream().use { stream ->
-                this.compress(Bitmap.CompressFormat.JPEG, 100, stream)
+                this.compress(Bitmap.CompressFormat.JPEG, THUMBNAIL_JPEG_QUALITY, stream)
                 byteArray = stream.toByteArray()
             }
+            recycle()
         }
 
         return byteArray
@@ -1633,36 +1655,34 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         cachePath.deleteRecursively()
     }
 
-    private fun getVideoThumbnailFromPath(videoPath: String, width: Int?, timeMs: Int?, quality: Int?): ByteArray? {
-        var byteArray: ByteArray? = null
-        
+    private fun getVideoThumbnailFromPath(videoPath: String, width: Int?, timeMs: Long?, quality: Int?): ByteArray? {
+        val retriever = android.media.MediaMetadataRetriever()
         try {
-            val retriever = android.media.MediaMetadataRetriever()
             retriever.setDataSource(videoPath)
-            
-            val timeUs = (timeMs ?: 0) * 1000L // Convert milliseconds to microseconds
-            var bitmap = retriever.getFrameAtTime(timeUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-            
-            if (bitmap != null) {
-                // Resize bitmap if width is specified and not -1
-                if (width != null && width != -1) {
-                    val aspectRatio = bitmap.height.toFloat() / bitmap.width.toFloat()
-                    val targetHeight = (width * aspectRatio).toInt()
-                    bitmap = Bitmap.createScaledBitmap(bitmap, width, targetHeight, true)
-                }
-                
-                ByteArrayOutputStream().use { stream ->
-                    val compressionQuality = quality ?: 100
-                    bitmap.compress(Bitmap.CompressFormat.JPEG, compressionQuality, stream)
-                    byteArray = stream.toByteArray()
-                }
+
+            val timeUs = (timeMs ?: 0L) * 1000L
+            val frame = retriever.getFrameAtTime(timeUs, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: return null
+
+            // Resize bitmap if width is specified and not -1
+            val bitmap = if (width != null && width != -1 && width != frame.width) {
+                val aspectRatio = frame.height.toFloat() / frame.width.toFloat()
+                val targetHeight = (width * aspectRatio).toInt()
+                Bitmap.createScaledBitmap(frame, width, targetHeight, true).also { frame.recycle() }
+            } else {
+                frame
             }
-            
-            retriever.release()
+
+            return ByteArrayOutputStream().use { stream ->
+                bitmap.compress(Bitmap.CompressFormat.JPEG, quality ?: 100, stream)
+                bitmap.recycle()
+                stream.toByteArray()
+            }
         } catch (e: Exception) {
-            Log.e("PhotoGallery", "Error getting video thumbnail: ${e.message}")
+            Log.e(TAG, "Error getting video thumbnail: ${e.message}")
+            return null
+        } finally {
+            retriever.release()
         }
-        
-        return byteArray
     }
 }

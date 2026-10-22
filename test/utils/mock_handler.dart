@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:photo_gallery/photo_gallery.dart';
@@ -31,13 +33,13 @@ Future<dynamic> mockMethodCallHandler(MethodCall call) async {
   } else if (call.method == "getThumbnail") {
     String mediumId = call.arguments['mediumId'];
     MediumType? mediumType = jsonToMediumType(call.arguments['mediumType']);
-    dynamic thumbnail = Generator.generateMockThumbnail(
-        mediumId: mediumId, mediumType: mediumType);
-    return thumbnail;
+    // Platforms send byte arrays as Uint8List.
+    return Uint8List.fromList(Generator.generateMockThumbnail(
+        mediumId: mediumId, mediumType: mediumType));
   } else if (call.method == "getAlbumThumbnail") {
     String albumId = call.arguments['albumId'];
-    dynamic thumbnail = Generator.generateMockAlbumThumbnail(albumId: albumId);
-    return thumbnail;
+    return Uint8List.fromList(
+        Generator.generateMockAlbumThumbnail(albumId: albumId));
   } else if (call.method == "getFile") {
     String mediumId = call.arguments['mediumId'];
     MediumType? mediumType = jsonToMediumType(call.arguments['mediumType']);

@@ -12,18 +12,26 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     registrar.addMethodCallDelegate(instance, channel: channel)
   }
 
+  // File copies and exports run here so they never block the main thread.
+  private let fileQueue = DispatchQueue(label: "photo_gallery.file", qos: .userInitiated)
+
+  private static let thumbnailJpegQuality: CGFloat = 0.8
+
   public func handle(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let arguments = call.arguments as? [String: Any] ?? [:]
+
     if(call.method == "listAlbums") {
-      let arguments = call.arguments as! Dictionary<String, AnyObject>
       let mediumType = arguments["mediumType"] as? String
       let hideIfEmpty = arguments["hideIfEmpty"] as? Bool
       result(listAlbums(mediumType: mediumType, hideIfEmpty: hideIfEmpty))
     }
     else if(call.method == "listMedia") {
-      let arguments = call.arguments as! Dictionary<String, AnyObject>
-      let albumId = arguments["albumId"] as! String
+      guard let albumId = arguments["albumId"] as? String else {
+        result(missingArgument("albumId"))
+        return
+      }
       let mediumType = arguments["mediumType"] as? String
-      let newest = arguments["newest"] as! Bool
+      let newest = arguments["newest"] as? Bool ?? true
       let skip = arguments["skip"] as? NSNumber
       let take = arguments["take"] as? NSNumber
       let lightWeight = arguments["lightWeight"] as? Bool
@@ -37,18 +45,22 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
       ))
     }
     else if(call.method == "getMedium") {
-      let arguments = call.arguments as! Dictionary<String, AnyObject>
-      let mediumId = arguments["mediumId"] as! String
+      guard let mediumId = arguments["mediumId"] as? String else {
+        result(missingArgument("mediumId"))
+        return
+      }
       do {
         let medium = try getMedium(mediumId: mediumId)
         result(medium)
       } catch {
-        result(nil)
+        result(flutterError(error, fallbackCode: "NOT_FOUND"))
       }
     }
     else if(call.method == "getThumbnail") {
-      let arguments = call.arguments as! Dictionary<String, AnyObject>
-      let mediumId = arguments["mediumId"] as! String
+      guard let mediumId = arguments["mediumId"] as? String else {
+        result(missingArgument("mediumId"))
+        return
+      }
       let width = arguments["width"] as? NSNumber
       let height = arguments["height"] as? NSNumber
       let highQuality = arguments["highQuality"] as? Bool
@@ -58,15 +70,17 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
         height: height,
         highQuality: highQuality,
         completion: { (data: Data?, error: Error?) -> Void in
-          result(data)
+          self.reply(result, data: data, error: error)
         }
       )
     }
     else if(call.method == "getVideoThumbnailFromPath") {
-      let arguments = call.arguments as! Dictionary<String, AnyObject>
-      let videoPath = arguments["videoPath"] as! String
+      guard let videoPath = arguments["videoPath"] as? String else {
+        result(missingArgument("videoPath"))
+        return
+      }
       let width = arguments["width"] as? Int
-      let timeMs = arguments["timeMs"] as? Int
+      let timeMs = (arguments["timeMs"] as? NSNumber)?.int64Value
       let quality = arguments["quality"] as? Int
       getVideoThumbnailFromPath(
         videoPath: videoPath,
@@ -74,15 +88,17 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
         timeMs: timeMs,
         quality: quality,
         completion: { (data: Data?, error: Error?) -> Void in
-          result(data)
+          self.reply(result, data: data, error: error)
         }
       )
     }
     else if(call.method == "getAlbumThumbnail") {
-      let arguments = call.arguments as! Dictionary<String, AnyObject>
-      let albumId = arguments["albumId"] as! String
+      guard let albumId = arguments["albumId"] as? String else {
+        result(missingArgument("albumId"))
+        return
+      }
       let mediumType = arguments["mediumType"] as? String
-      let newest = arguments["newest"] as! Bool
+      let newest = arguments["newest"] as? Bool ?? true
       let width = arguments["width"] as? Int
       let height = arguments["height"] as? Int
       let highQuality = arguments["highQuality"] as? Bool
@@ -94,39 +110,73 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
         height: height,
         highQuality: highQuality,
         completion: { (data: Data?, error: Error?) -> Void in
-          result(data)
+          self.reply(result, data: data, error: error)
         }
       )
     }
     else if(call.method == "getFile") {
-      let arguments = call.arguments as! Dictionary<String, AnyObject>
-      let mediumId = arguments["mediumId"] as! String
+      guard let mediumId = arguments["mediumId"] as? String else {
+        result(missingArgument("mediumId"))
+        return
+      }
       let mimeType = arguments["mimeType"] as? String
       getFile(
         mediumId: mediumId,
         mimeType: mimeType,
         completion: { (filepath: String?, error: Error?) -> Void in
-          result(filepath?.replacingOccurrences(of: "file://", with: ""))
+          if let filepath = filepath {
+            result(filepath.replacingOccurrences(of: "file://", with: ""))
+          } else {
+            result(self.flutterError(error, fallbackCode: "FILE_UNAVAILABLE"))
+          }
         }
       )
     }
     else if(call.method == "deleteMedium") {
-      let arguments = call.arguments as! Dictionary<String, AnyObject>
-      let mediumId = arguments["mediumId"] as! String
+      guard let mediumId = arguments["mediumId"] as? String else {
+        result(missingArgument("mediumId"))
+        return
+      }
       deleteMedium(
         mediumId: mediumId,
         completion: { (success: Bool, error: Error?) -> Void in
-          result(success)
+          DispatchQueue.main.async {
+            result(success)
+          }
         }
       )
     }
     else if(call.method == "cleanCache") {
-      cleanCache()
-      result(nil)
+      fileQueue.async {
+        self.cleanCache()
+        DispatchQueue.main.async {
+          result(nil)
+        }
+      }
     }
     else {
+      // getAllMusicFiles is Android-only for now; the Dart side guards it.
       result(FlutterMethodNotImplemented)
     }
+  }
+
+  private func missingArgument(_ name: String) -> FlutterError {
+    return FlutterError(code: "INVALID_ARGUMENT", message: "Missing required argument '\(name)'", details: nil)
+  }
+
+  private func reply(_ result: FlutterResult, data: Data?, error: Error?) {
+    if let data = data {
+      result(data)
+    } else {
+      result(flutterError(error, fallbackCode: "NOT_FOUND"))
+    }
+  }
+
+  private func flutterError(_ error: Error?, fallbackCode: String) -> FlutterError {
+    guard let nsError = error as NSError? else {
+      return FlutterError(code: fallbackCode, message: nil, details: nil)
+    }
+    return FlutterError(code: "\(nsError.domain):\(nsError.code)", message: nsError.localizedDescription, details: nil)
   }
 
   private var assetCollections: [PHAssetCollection] = []
@@ -313,7 +363,7 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
             completion(nil, NSError(domain: "photo_gallery", code: 404, userInfo: nil))
             return
           }
-          let bytes = image.jpegData(compressionQuality: CGFloat(70))
+          let bytes = image.jpegData(compressionQuality: SwiftPhotoGalleryPlugin.thumbnailJpegQuality)
           completion(bytes, nil)
         }
       )
@@ -326,7 +376,7 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
   private func getVideoThumbnailFromPath(
     videoPath: String,
     width: Int?,
-    timeMs: Int?,
+    timeMs: Int64?,
     quality: Int?,
     completion: @escaping (Data?, Error?) -> Void
   ) {
@@ -356,7 +406,8 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
           let targetHeight = CGFloat(targetWidth) * aspectRatio
           let targetSize = CGSize(width: CGFloat(targetWidth), height: targetHeight)
           
-          UIGraphicsBeginImageContextWithOptions(targetSize, false, 0.0)
+          // Scale 1: width is in pixels, as on Android (0.0 would multiply by the screen scale).
+          UIGraphicsBeginImageContextWithOptions(targetSize, false, 1.0)
           image.draw(in: CGRect(origin: .zero, size: targetSize))
           image = UIGraphicsGetImageFromCurrentImageContext() ?? image
           UIGraphicsEndImageContext()
@@ -425,7 +476,7 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
             completion(nil, NSError(domain: "photo_gallery", code: 404, userInfo: nil))
             return
           }
-          let bytes = image.jpegData(compressionQuality: CGFloat(80))
+          let bytes = image.jpegData(compressionQuality: SwiftPhotoGalleryPlugin.thumbnailJpegQuality)
           completion(bytes, nil)
         }
       )
@@ -436,6 +487,11 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
   }
 
   private func getFile(mediumId: String, mimeType: String?, completion: @escaping (String?, Error?) -> Void) {
+    let finish: (String?, Error?) -> Void = { path, error in
+      DispatchQueue.main.async {
+        completion(path, error)
+      }
+    }
     let manager = PHImageManager.default()
 
     let fetchOptions = PHFetchOptions()
@@ -444,81 +500,123 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     }
     let assets: PHFetchResult = PHAsset.fetchAssets(withLocalIdentifiers: [mediumId], options: fetchOptions)
 
-    if (assets.count > 0) {
-      let asset: PHAsset = assets[0]
-      if(asset.mediaType == PHAssetMediaType.image) {
-        let options = PHImageRequestOptions()
-        options.isSynchronous = false
-        options.version = .current
-        options.deliveryMode = .highQualityFormat
-        options.isNetworkAccessAllowed = true
+    guard assets.count > 0 else {
+      finish(nil, NSError(domain: "photo_gallery", code: 404, userInfo: nil))
+      return
+    }
+    let asset: PHAsset = assets[0]
+    if(asset.mediaType == PHAssetMediaType.image) {
+      let options = PHImageRequestOptions()
+      options.isSynchronous = false
+      options.version = .current
+      options.deliveryMode = .highQualityFormat
+      options.isNetworkAccessAllowed = true
 
-        manager.requestImageData(
-          for: asset,
-          options: options,
-          resultHandler: { (data: Data?, uti: String?, orientation, info) in
-            DispatchQueue.main.async(execute: {
-              guard let imageData = data else {
-                completion(nil, NSError(domain: "photo_gallery", code: 404, userInfo: nil))
+      manager.requestImageData(
+        for: asset,
+        options: options,
+        resultHandler: { (data: Data?, uti: String?, orientation, info) in
+          self.fileQueue.async {
+            guard let imageData = data, let assetUTI = uti else {
+              finish(nil, (info?[PHImageErrorKey] as? Error) ?? NSError(domain: "photo_gallery", code: 404, userInfo: nil))
+              return
+            }
+            do {
+              if let mimeType = mimeType, self.extractMimeTypeFromUTI(uti: assetUTI) != mimeType {
+                let path = try self.cacheImage(asset: asset, data: imageData, mimeType: mimeType)
+                finish(path, path == nil ? NSError(domain: "photo_gallery", code: 415, userInfo: nil) : nil)
                 return
-              }
-              guard let assetUTI = uti else {
-                completion(nil, NSError(domain: "photo_gallery", code: 404, userInfo: nil))
-                return
-              }
-              if mimeType != nil {
-                let type = self.extractMimeTypeFromUTI(uti: assetUTI)
-                if type != mimeType {
-                  let path = self.cacheImage(asset: asset, data: imageData, mimeType: mimeType!)
-                  completion(path, NSError(domain: "photo_gallery", code: 404, userInfo: nil))
-                  return
-                }
               }
               let fileExt = self.extractFileExtensionFromUTI(uti: assetUTI)
-              let filepath = self.exportPathForAsset(asset: asset, ext: fileExt)
-              try! imageData.write(to: filepath, options: .atomic)
-              completion(filepath.absoluteString, nil)
-            })
+              let filepath = try self.exportPathForAsset(asset: asset, ext: fileExt)
+              try imageData.write(to: filepath, options: .atomic)
+              finish(filepath.absoluteString, nil)
+            } catch {
+              finish(nil, error)
+            }
           }
-        )
-      } else if(asset.mediaType == PHAssetMediaType.video || asset.mediaType == PHAssetMediaType.audio) {
-        let options = PHVideoRequestOptions()
-        options.version = .current
-        options.deliveryMode = .highQualityFormat
-        options.isNetworkAccessAllowed = true
+        }
+      )
+    } else if(asset.mediaType == PHAssetMediaType.video || asset.mediaType == PHAssetMediaType.audio) {
+      let options = PHVideoRequestOptions()
+      options.version = .current
+      options.deliveryMode = .highQualityFormat
+      options.isNetworkAccessAllowed = true
 
-        manager.requestAVAsset(
-          forVideo: asset,
-          options: options,
-          resultHandler: { (avAsset, avAudioMix, info) in
-            DispatchQueue.main.async(execute: {
-              do {
-                let avAsset = avAsset as? AVURLAsset
-                let data = try Data(contentsOf: avAsset!.url)
+      manager.requestAVAsset(
+        forVideo: asset,
+        options: options,
+        resultHandler: { (avAsset, avAudioMix, info) in
+          self.fileQueue.async {
+            do {
+              if let urlAsset = avAsset as? AVURLAsset {
                 let fileExt = self.extractFileExtensionFromAsset(asset: asset)
-                let filepath = self.exportPathForAsset(asset: asset, ext: fileExt)
-                try! data.write(to: filepath, options: .atomic)
-                completion(filepath.absoluteString, nil)
-              } catch {
-                completion(nil, NSError(domain: "photo_gallery", code: 500, userInfo: nil))
+                let filepath = try self.exportPathForAsset(asset: asset, ext: fileExt)
+                try self.copyFileIfNeeded(from: urlAsset.url, to: filepath)
+                finish(filepath.absoluteString, nil)
+              } else if let composition = avAsset {
+                // Slow-motion and edited videos come back as an AVComposition with no
+                // backing file, so they have to be rendered out.
+                let filepath = try self.exportPathForAsset(asset: asset, ext: ".mov")
+                self.exportComposition(composition, to: filepath, completion: finish)
+              } else {
+                finish(nil, (info?[PHImageErrorKey] as? Error) ?? NSError(domain: "photo_gallery", code: 404, userInfo: nil))
               }
-            })
+            } catch {
+              finish(nil, error)
+            }
           }
-        )
+        }
+      )
+    } else {
+      finish(nil, NSError(domain: "photo_gallery", code: 415, userInfo: nil))
+    }
+  }
+
+  /// Streams the file on disk instead of loading it into memory, and reuses an
+  /// earlier copy when it is still complete.
+  private func copyFileIfNeeded(from source: URL, to destination: URL) throws {
+    let fileManager = FileManager.default
+    if fileManager.fileExists(atPath: destination.path) {
+      let sourceSize = try fileManager.attributesOfItem(atPath: source.path)[.size] as? NSNumber
+      let destinationSize = try fileManager.attributesOfItem(atPath: destination.path)[.size] as? NSNumber
+      if sourceSize != nil && sourceSize == destinationSize {
+        return
+      }
+      try fileManager.removeItem(at: destination)
+    }
+    try fileManager.copyItem(at: source, to: destination)
+  }
+
+  private func exportComposition(_ avAsset: AVAsset, to destination: URL, completion: @escaping (String?, Error?) -> Void) {
+    if FileManager.default.fileExists(atPath: destination.path) {
+      try? FileManager.default.removeItem(at: destination)
+    }
+    guard let session = AVAssetExportSession(asset: avAsset, presetName: AVAssetExportPresetHighestQuality) else {
+      completion(nil, NSError(domain: "photo_gallery", code: 500, userInfo: nil))
+      return
+    }
+    session.outputURL = destination
+    session.outputFileType = .mov
+    session.exportAsynchronously {
+      if session.status == .completed {
+        completion(destination.absoluteString, nil)
+      } else {
+        completion(nil, session.error ?? NSError(domain: "photo_gallery", code: 500, userInfo: nil))
       }
     }
   }
 
-  private func cacheImage(asset: PHAsset, data: Data, mimeType: String) -> String? {
+  private func cacheImage(asset: PHAsset, data: Data, mimeType: String) throws -> String? {
     if mimeType == "image/jpeg" {
-      let filepath = self.exportPathForAsset(asset: asset, ext: ".jpeg")
+      let filepath = try self.exportPathForAsset(asset: asset, ext: ".jpeg")
       let uiImage = UIImage(data: data)
-      try! uiImage?.jpegData(compressionQuality: 100)?.write(to: filepath, options: .atomic)
+      try uiImage?.jpegData(compressionQuality: 1.0)?.write(to: filepath, options: .atomic)
       return filepath.absoluteString
     } else if mimeType == "image/png" {
-      let filepath = self.exportPathForAsset(asset: asset, ext: ".png")
+      let filepath = try self.exportPathForAsset(asset: asset, ext: ".png")
       let uiImage = UIImage(data: data)
-      try! uiImage?.pngData()?.write(to: filepath, options: .atomic)
+      try uiImage?.pngData()?.write(to: filepath, options: .atomic)
       return filepath.absoluteString
     } else {
       return nil
@@ -559,11 +657,11 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     ]
   }
 
-  private func exportPathForAsset(asset: PHAsset, ext: String) -> URL {
+  private func exportPathForAsset(asset: PHAsset, ext: String) throws -> URL {
     let mediumId = asset.localIdentifier
       .replacingOccurrences(of: "/", with: "__")
       .replacingOccurrences(of: "\\", with: "__")
-    let cachePath = self.cachePath()
+    let cachePath = try self.cachePath()
     return cachePath.appendingPathComponent(mediumId + ext)
   }
 
@@ -685,10 +783,10 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
     return nil
   }
 
-  private func cachePath() -> URL {
+  private func cachePath() throws -> URL {
     let paths = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)
     let cacheFolder = paths[0].appendingPathComponent("photo_gallery")
-    try! FileManager.default.createDirectory(at: cacheFolder, withIntermediateDirectories: true, attributes: nil)
+    try FileManager.default.createDirectory(at: cacheFolder, withIntermediateDirectories: true, attributes: nil)
     return cacheFolder
   }
 
@@ -710,6 +808,8 @@ public class SwiftPhotoGalleryPlugin: NSObject, FlutterPlugin {
   }
 
   private func cleanCache() {
-    try? FileManager.default.removeItem(at: self.cachePath())
+    let cacheFolder = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+      .appendingPathComponent("photo_gallery")
+    try? FileManager.default.removeItem(at: cacheFolder)
   }
 }

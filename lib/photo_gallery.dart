@@ -10,6 +10,8 @@ import 'package:flutter/widgets.dart';
 
 part 'src/common/medium_type.dart';
 
+part 'src/common/photo_gallery_exception.dart';
+
 part 'src/image_providers/album_thumbnail_provider.dart';
 
 part 'src/image_providers/photo_provider.dart';
@@ -26,60 +28,30 @@ part 'src/models/medium.dart';
 class PhotoGallery {
   static const MethodChannel _channel = MethodChannel('photo_gallery');
 
+  /// Invokes [method] and rethrows platform failures as [PhotoGalleryException].
+  static Future<T?> _invoke<T>(String method, [Object? arguments]) async {
+    try {
+      return await _channel.invokeMethod<T>(method, arguments);
+    } on PlatformException catch (e) {
+      throw PhotoGalleryException(e.code, e.message);
+    }
+  }
+
   /// List all available gallery albums and counts number of items of [MediumType].
   static Future<List<Album>> listAlbums({
     MediumType? mediumType,
     bool newest = true,
     bool hideIfEmpty = true,
   }) async {
-    final json = await _channel.invokeMethod('listAlbums', {
+    final json = await _invoke<List<Object?>>('listAlbums', {
       'mediumType': mediumTypeToJson(mediumType),
       'newest': newest,
       'hideIfEmpty': hideIfEmpty,
     });
-    return json
+    return (json ?? const [])
         .map<Album>((album) => Album.fromJson(album, mediumType, newest))
         .toList();
   }
-
-  /// listing audio albums is a challenge. when using the same logic as for video and photo albums, it returns albums list, which is the album attribute of the audio file. actually we
-  /// wanted to get the folder based list. This can't be done using the media store album list. so if we alter album name with folder name, then we have to write file scanning code to get the list of audio files.
-  ///
-  // static Future<List<Album>> listAudioAlbums({
-  //   MediumType? mediumType = MediumType.audio,
-  //   bool newest = true,
-  //   bool hideIfEmpty = true,
-  // }) async {
-  //   final json = await _channel.invokeMethod('listAlbums', {
-  //     'mediumType': mediumTypeToJson(mediumType),
-  //     'newest': newest,
-  //     'hideIfEmpty': hideIfEmpty,
-  //   });
-  //   return json
-  //       .map<Album>((album) => Album.fromJson(album, mediumType, newest))
-  //       .toList();
-  // }
-
-// ----------------- New Function ----------------//
-  static Future<List<Album>> listAudioAlbums({
-    MediumType? mediumType = MediumType.audio,
-    bool newest = true,
-    bool hideIfEmpty = true,
-  }) async {
-    // 1. fist list all audio file with file path
-
-    //
-
-    final json = await _channel.invokeMethod('getAllMusicFiles');
-
-    // 2. then group this file list to albums based on file path
-    // album name is directory name of file path
-
-    return json
-        .map<Album>((album) => Album.fromJson(album, mediumType, newest))
-        .toList();
-  }
-// ----------------- New Function ----------------//
 
   //listAllMusic
   static Future<List<Album>> listAllMusic({
@@ -87,12 +59,12 @@ class PhotoGallery {
     bool newest = true,
     bool hideIfEmpty = true,
   }) async {
-    final json = await _channel.invokeMethod('listAllMusic', {
+    final json = await _invoke<List<Object?>>('listAllMusic', {
       'mediumType': mediumTypeToJson(mediumType),
       'newest': newest,
       'hideIfEmpty': hideIfEmpty,
     });
-    return json
+    return (json ?? const [])
         .map<Album>((album) => Album.fromJson(album, mediumType, newest))
         .toList();
   }
@@ -104,7 +76,7 @@ class PhotoGallery {
     int? take,
     bool? lightWeight,
   }) async {
-    final json = await _channel.invokeMethod('listMedia', {
+    final json = await _invoke('listMedia', {
       'albumId': album.id,
       'mediumType': mediumTypeToJson(album.mediumType),
       'newest': album.newest,
@@ -120,7 +92,7 @@ class PhotoGallery {
     required String mediumId,
     MediumType? mediumType,
   }) async {
-    final json = await _channel.invokeMethod('getMedium', {
+    final json = await _invoke('getMedium', {
       'mediumId': mediumId,
       'mediumType': mediumTypeToJson(mediumType),
     });
@@ -135,15 +107,17 @@ class PhotoGallery {
     int? height,
     bool? highQuality = false,
   }) async {
-    final bytes = await _channel.invokeMethod('getThumbnail', {
+    final bytes = await _invoke<Uint8List>('getThumbnail', {
       'mediumId': mediumId,
       'mediumType': mediumTypeToJson(mediumType),
       'width': width,
       'height': height,
       'highQuality': highQuality,
     });
-    if (bytes == null) throw "Failed to fetch thumbnail of medium $mediumId";
-    return List<int>.from(bytes);
+    if (bytes == null) {
+      throw PhotoGalleryException('NOT_FOUND', "Failed to fetch thumbnail of medium $mediumId");
+    }
+    return bytes;
   }
 
   /// Get video thumbnail from video file path
@@ -153,14 +127,16 @@ class PhotoGallery {
     int timeMs = 0,
     int quality = 100,
   }) async {
-    final bytes = await _channel.invokeMethod('getVideoThumbnailFromPath', {
+    final bytes = await _invoke<Uint8List>('getVideoThumbnailFromPath', {
       'videoPath': videoPath,
       'width': width,
       'timeMs': timeMs,
       'quality': quality,
     });
-    if (bytes == null) throw "Failed to fetch video thumbnail from $videoPath";
-    return List<int>.from(bytes);
+    if (bytes == null) {
+      throw PhotoGalleryException('NOT_FOUND', "Failed to fetch video thumbnail from $videoPath");
+    }
+    return bytes;
   }
 
   /// Get album thumbnail by album id
@@ -172,7 +148,7 @@ class PhotoGallery {
     int? height,
     bool? highQuality = false,
   }) async {
-    final bytes = await _channel.invokeMethod('getAlbumThumbnail', {
+    final bytes = await _invoke<Uint8List>('getAlbumThumbnail', {
       'albumId': albumId,
       'mediumType': mediumTypeToJson(mediumType),
       'newest': newest,
@@ -180,8 +156,10 @@ class PhotoGallery {
       'height': height,
       'highQuality': highQuality,
     });
-    if (bytes == null) throw "Failed to fetch thumbnail of album $albumId";
-    return List<int>.from(bytes);
+    if (bytes == null) {
+      throw PhotoGalleryException('NOT_FOUND', "Failed to fetch thumbnail of album $albumId");
+    }
+    return bytes;
   }
 
   /// get medium file by medium id
@@ -190,12 +168,15 @@ class PhotoGallery {
     MediumType? mediumType,
     String? mimeType,
   }) async {
-    final path = await _channel.invokeMethod('getFile', {
+    final path = await _invoke<String>('getFile', {
       'mediumId': mediumId,
       'mediumType': mediumTypeToJson(mediumType),
       'mimeType': mimeType,
-    }) as String?;
-    if (path == null) throw "Cannot get file $mediumId with type $mimeType";
+    });
+    if (path == null) {
+      throw PhotoGalleryException(
+          'FILE_UNAVAILABLE', "Cannot get file $mediumId with type $mimeType");
+    }
     return File(path);
   }
 
@@ -204,20 +185,23 @@ class PhotoGallery {
     required String mediumId,
     MediumType? mediumType,
   }) async {
-    await _channel.invokeMethod('deleteMedium', {
+    await _invoke('deleteMedium', {
       'mediumId': mediumId,
       'mediumType': mediumTypeToJson(mediumType),
     });
   }
 
-  /// Get music files
-  static Future getAllMusicFiles() async {
-    final result = await _channel.invokeMethod('getAllMusicFiles');
-    return result;
+  /// Get music files as a JSON tree keyed by folder path, with the files of a
+  /// folder under `mFiles`.
+  ///
+  /// Android only for now; other platforms get an empty tree (`{}`).
+  static Future<String> getAllMusicFiles() async {
+    if (!Platform.isAndroid) return '{}';
+    return await _invoke<String>('getAllMusicFiles') ?? '{}';
   }
 
   /// Clean medium file cache
   static Future<void> cleanCache() async {
-    _channel.invokeMethod('cleanCache', {});
+    await _invoke('cleanCache', {});
   }
 }
