@@ -987,6 +987,14 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
         }
     }
 
+    // Pre-R MediaStore takes paging in the sort order string. SQLite needs LIMIT
+    // before OFFSET, and OFFSET only after a LIMIT (-1 means no limit).
+    private fun pagedSortOrder(orderBy: String, skip: Int?, take: Int?): String {
+        if (skip == null && take == null) return orderBy
+        val limit = "LIMIT ${take ?: -1}"
+        return if (skip != null) "$orderBy $limit OFFSET $skip" else "$orderBy $limit"
+    }
+
     private fun getImageCursor(
         albumId: String,
         newest: Boolean,
@@ -1023,15 +1031,12 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     null
                 )
             } else {
-                val offset = if (skip != null) "OFFSET $skip" else ""
-                val limit = if (take != null) "LIMIT $take" else ""
-
                 imageCursor = this.contentResolver.query(
                     MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
                     projection,
                     selection,
                     selectionArgs,
-                    "$orderBy $offset $limit"
+                    pagedSortOrder(orderBy, skip, take)
                 )
             }
 
@@ -1075,15 +1080,12 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     null
                 )
             } else {
-                val offset = if (skip != null) "OFFSET $skip" else ""
-                val limit = if (take != null) "LIMIT $take" else ""
-
                 videoCursor = this.contentResolver.query(
                     MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
                     projection,
                     selection,
                     selectionArgs,
-                    "$orderBy $offset $limit"
+                    pagedSortOrder(orderBy, skip, take)
                 )
             }
 
@@ -1128,15 +1130,12 @@ class PhotoGalleryPlugin : FlutterPlugin, MethodCallHandler, ActivityAware {
                     null
                 )
             } else {
-                val offset = if (skip != null) "OFFSET $skip" else ""
-                val limit = if (take != null) "LIMIT $take" else ""
-
                 audioCursor = this.contentResolver.query(
                     MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                     projection,
                     selection,
                     selectionArgs,
-                    "$orderBy $offset $limit"
+                    pagedSortOrder(orderBy, skip, take)
                 )
             }
 
